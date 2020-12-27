@@ -1,10 +1,23 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
+NOTICE='''
+Generate 7-day moving average charts from coronavirus.data.gov for selected regions.
+Sort location key by latest 7-day average cases.
+Locally save in PNG and SVG, upload SVG only to Commons.
+
+date: December 2020
+author: Fae
+
+Notes
+LTLA = Lower Tier Local Authority
+Population data from ONS, latest available
+Covid data live from data.gov
+'''
 from requests import get
 import plotly
 import plotly.graph_objects as go
-import pywikibot, urllib2, re, sys
+import pywikibot, urllib2, re, sys, os
 from colorama import Fore, Back, Style
 from colorama import init
 init()
@@ -42,13 +55,12 @@ def up(source, pagetitle, desc, comment, iw):
 			)
 
 def get_data(url):
-    response = get(endpoint, timeout=10)
+    response = get(url, timeout=10)
     if response.status_code >= 400:
         raise RuntimeError('Request failed: {}'.format(response.text))
     return response.json()
-    
-def addline(area, linecolour, population):
-	global fig, endpoint, reportdate, triggerline
+
+def get_line(area):
 	ctype = "newCasesByPublishDate" # "cumCasesBySpecimenDate" #" #newCasesBySpecimenDate
 	endpoint = 'https://api.coronavirus.data.gov.uk/v1/data?filters=areaType=ltla;areaName=' + area + '&structure={"date":"date","cases":"' + ctype + '"}'
 	try:
@@ -57,16 +69,43 @@ def addline(area, linecolour, population):
 		print Fore.MAGENTA, str(e)
 		print Fore.CYAN + endpoint
 		print area, Fore.WHITE
-		return
-	reportdate = data['data'][0]['date']
+		return ''
+	return data
+
+def get_chart(info):
+	chart = []
+	for line in info[2:]:
+		area, colour, population = line[0],line[1],line[2]
+		linedata = get_line(area)
+		linedata = linedata['data'][:35]
+		last = sum([l['cases'] for l in linedata[0:7]])
+		last = int((last * 100000.)/population)
+		chart.append({
+			"area":area,
+			"colour":colour,
+			"population":population,
+			"data":linedata,
+			"last":last
+			})
+	chart = sorted(chart, key=lambda x: x['last'], reverse=True)
+	return chart
+
+def addline(area, linecolour, population, data, last):
+	global fig, endpoint, reportdate, triggerline
+	reportdate = data[0]['date']
 	cumA = []
 	cumD = []
 	cumL = []
-	for r in range(0,28):
-		cum = sum([data['data'][c]['cases'] for c in range(r, r+7)])
+	rmax = 28
+	#if area == 'Newcastle upon Tyne':
+	#	rmax = 28-4
+	for r in range(0,rmax):
+		cum = sum([data[c]['cases'] for c in range(r, r+7)])
 		cum = int((cum * 100000.)/population)
+		#if cum>1000:
+		#	continue
 		# Can check pop data in use by float(data['data'][r]['cases'])/float(data['data'][r]['cum'])
-		cumD.append(data['data'][r]['date'])
+		cumD.append(data[r]['date'])
 		cumP =cum
 		cumA.append(cumP)
 		if r % 7 == 0:
@@ -82,7 +121,7 @@ def addline(area, linecolour, population):
 			showlegend=False,
 			hoverinfo='skip'))
 		triggerline = 100
-	fig.add_trace(go.Scatter(x=cumD, y=cumA, name=area, line=dict(color=linecolour, width=4), showlegend = True))
+	fig.add_trace(go.Scatter(x=cumD, y=cumA, name="{} {}".format(area, last), line=dict(color=linecolour, width=4), showlegend = True))
 	fig.add_trace(go.Scatter(x=cumD, text=cumL, y=cumA, name=area, marker=dict(color=linecolour, size=8), mode='markers+text', textposition='top center', showlegend=False))
 
 defaulttext = u"""== {{int:filedesc}} ==
@@ -96,7 +135,7 @@ Sources:
 # https://www.ons.gov.uk/peoplepopulationandcommunity/populationandmigration/populationestimates/datasets/populationestimatesforukenglandandwalesscotlandandnorthernireland (mid-2019: April 2020 local authority district codes)
 Created using [[mw:Pywikibot|Pywikibot]] and [https://plotly.com/python/ Plotly]. Last 28 days are shown with average calculated for the 7 days inclusive before each data point plotted. Will continue to automatically update on a daily basis while figures are high (i.e. above 100).
 
-Note that [https://www.nytimes.com/interactive/2020/world/europe/united-kingdom-coronavirus-cases.html#map NYTimes] is a good comparison, which uses the same datasets, but thier ONS census data is from 2011, so the figures are "artificially" higher as these population figures will always be larger when calculating <code>''total cases/population * 100,000''</code>, but will give identical trend lines.}}
+Note that [https://www.nytimes.com/interactive/2020/world/europe/united-kingdom-coronavirus-cases.html#map NYTimes] is a good comparison, which uses the same datasets, but their ONS census data is from 2011, so the figures are "artificially" higher as these population figures will always be larger when calculating <code>''total cases/population * 100,000''</code>, but will give identical trend lines.}}
 |date = 2020-09-28
 |source = {{own}}
 |author = Fæ
@@ -132,6 +171,7 @@ chartArr = [
 		('South Tyneside', 'blue', 150976.),
 		('Sunderland', 'green', 277705.),
 		('County Durham', 'indigo', 530094.),
+		('Northumberland', 'darkblue', 320274),
 		],
 	[
 		"COVID-19 cases in South London, 7 day total",
@@ -186,8 +226,9 @@ if __name__ == '__main__':
 		triggerline = 0
 		title = info[0]
 		filename = info[1]
-		for line in info[2:]:
-			addline(line[0], line[1], line[2])
+		chartdata = get_chart(info)
+		for line in chartdata:
+			addline(line['area'], line['colour'], line['population'], line['data'], line['last'])
 		fig.update_layout(title=title + ' to ' + reportdate,
 			xaxis_title = "Date",
 			yaxis_title="Cases per 100,000 people, 7 day total")
@@ -195,7 +236,7 @@ if __name__ == '__main__':
 		#fig.show()
 		#continue
 		page = pywikibot.ImagePage(site, u'File:' + title + '.svg')
-		if page.exists():
+		if page.exists() and len(sys.argv)<2:
 			dd = None
 			html = page.get()
 			hist = page.getFileVersionHistory()
@@ -208,10 +249,12 @@ if __name__ == '__main__':
 		else:
 			print Fore.MAGENTA, "Creating page", page.title(), Fore.WHITE
 			dd = defaulttext
-		local =    "/home/ashley/Downloads/TEMP/"+filename+".svg"
-		localpng = "/home/ashley/Downloads/TEMP/"+filename+".png"
+		home = os.path.expanduser("~")
+		local =    home + "/Downloads/TEMP/"+filename+".svg"
+		localpng = home + "/Downloads/TEMP/"+filename+".png"
 		fig.write_image(local, format="svg", width=1024, height = 768)
 		fig.write_image(localpng, format="png", width=1024, height = 768)
 		comment = "Update for " + reportdate
 		pywikibot.setAction(comment)
-		up(local, title, dd, "COVID-19 stats update for " + reportdate, True)
+		if len(sys.argv)<2:
+			up(local, title, dd, "COVID-19 stats update for " + reportdate, True)
